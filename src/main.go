@@ -33,9 +33,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	riff := binary.BigEndian.Uint32(data[:4])
-
-	if riff != 0x52494646 {
+	riff := string(data[:4])
+	if riff != "RIFF" {
 		_, err := fmt.Fprintf(os.Stderr, "File %s contains invalid RIFF header\n", os.Args[0])
 		if err != nil {
 			os.Exit(2)
@@ -45,9 +44,8 @@ func main() {
 
 	chunkSize := binary.LittleEndian.Uint32(data[4:8])
 
-	format := binary.BigEndian.Uint32(data[8:12])
-	fmt.Printf("0x%08x\n", format)
-	if format != 57415645 {
+	format := string(data[8:12])
+	if format != "WAVE" {
 		_, err := fmt.Fprintf(os.Stderr, "File %s contains invalid WAVE format\n", os.Args[0])
 		if err != nil {
 			os.Exit(2)
