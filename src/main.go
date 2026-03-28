@@ -53,7 +53,76 @@ func main() {
 		os.Exit(1)
 	}
 
-	for i := uint32(12); i < chunkSize; i++ {
-		// TODO: parse file content
+	chunkId := string(data[12 : 12+4])
+	if chunkId != "fmt " {
+		_, err := fmt.Fprintf(os.Stderr, "File %s misses fmt chunk\n", os.Args[0])
+		if err != nil {
+			os.Exit(2)
+		}
+		os.Exit(1)
+	}
+
+	fmtChunkSize := binary.LittleEndian.Uint32(data[16:20])
+
+	if uint32(len(data)) < 20+fmtChunkSize {
+		_, err := fmt.Fprintf(os.Stderr, "File %s contains malformed fmt chunk\n", os.Args[0])
+		if err != nil {
+			os.Exit(2)
+		}
+		os.Exit(1)
+	}
+
+	audioFormat := binary.LittleEndian.Uint16(data[20:22])
+	if audioFormat != 1 {
+		_, err := fmt.Fprintf(os.Stderr, "File %s contains unsupported audio format\n", os.Args[0])
+		if err != nil {
+			os.Exit(2)
+		}
+		os.Exit(1)
+	}
+
+	numChannels := binary.LittleEndian.Uint16(data[22:24])
+	if numChannels != 1 {
+		_, err := fmt.Fprintf(os.Stderr, "File %s contains unsupported number of channels %s\n", os.Args[0], numChannels)
+		if err != nil {
+			os.Exit(2)
+		}
+		os.Exit(1)
+	}
+
+	sampleRate := binary.LittleEndian.Uint32(data[24:28])
+	fmt.Printf("Sample rate: %d\n", sampleRate)
+
+	byteRate := binary.LittleEndian.Uint32(data[28:32])
+	fmt.Printf("Byte rate: %d\n", byteRate)
+
+	blockAlign := binary.LittleEndian.Uint16(data[32:34])
+	fmt.Printf("Block align: %d\n", blockAlign)
+
+	bitsPerSample := binary.LittleEndian.Uint16(data[34:36])
+	fmt.Printf("Bits per sample: %d\n", bitsPerSample)
+
+	if byteRate != sampleRate*uint32(numChannels)*uint32(bitsPerSample)/8 {
+		_, err := fmt.Fprintf(os.Stderr, "File %s contains malformed byte rate\n", os.Args[0])
+		if err != nil {
+			os.Exit(2)
+		}
+		os.Exit(1)
+	}
+
+	if blockAlign != numChannels*bitsPerSample/8 {
+		_, err := fmt.Fprintf(os.Stderr, "File %s contains malformed block align\n", os.Args[0])
+		if err != nil {
+			os.Exit(2)
+		}
+		os.Exit(1)
+	}
+
+	for i := uint32(36); i < chunkSize; i++ {
+		chunkId := string(data[i : i+4])
+
+		if chunkId == "data" {
+			// TODO: decode samples based on format
+		}
 	}
 }
