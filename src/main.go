@@ -11,6 +11,46 @@ import (
 	"github.com/ebitengine/oto/v3"
 )
 
+type decoderFunc func(data []byte) []byte
+
+func decode8Bit(data []byte) []byte {
+	return data
+}
+
+func decode16Bit(data []byte) []byte {
+	return data
+}
+
+func decode24Bit(data []byte) []byte {
+	var decodedData []byte
+	for i := 0; i+3 <= len(data); i += 3 {
+		b1 := uint32(data[i])
+		b2 := uint32(data[i+1])
+		b3 := uint32(data[i+2])
+
+		val24 := b1 | (b2 << 8) | (b3 << 16)
+		if val24&0x800000 != 0 {
+			val24 |= 0xFF000000
+		}
+		val16 := int16(int32(val24) >> 8)
+		decodedData = append(decodedData, byte(val16), byte(val16>>8))
+	}
+	return decodedData
+}
+
+func getDecoder(bitsPerSample uint16) (decoderFunc, *oto.Format) {
+	switch bitsPerSample {
+	case 8:
+		return decode8Bit, new(oto.FormatUnsignedInt8)
+	case 16:
+		return decode16Bit, new(oto.FormatSignedInt16LE)
+	case 24:
+		return decode24Bit, new(oto.FormatSignedInt16LE)
+	default:
+		return nil, nil
+	}
+}
+
 func main() {
 	flag.Parse()
 	args := flag.Args()
@@ -86,8 +126,8 @@ func main() {
 	}
 
 	numChannels := binary.LittleEndian.Uint16(data[22:24])
-	if numChannels != 1 {
-		_, err := fmt.Fprintf(os.Stderr, "File %s contains unsupported number of channels %s\n", os.Args[0], numChannels)
+	if numChannels != 1 && numChannels != 2 {
+		_, err := fmt.Fprintf(os.Stderr, "File %s contains unsupported number of channels %d\n", os.Args[0], numChannels)
 		if err != nil {
 			os.Exit(2)
 		}
@@ -123,7 +163,18 @@ func main() {
 	}
 
 	var audioData []byte
+	var otoFormat oto.Format
 	chunkOffset := 20 + fmtChunkSize
+
+	decoder, formatPtr := getDecoder(bitsPerSample)
+	if formatPtr == nil {
+		_, err := fmt.Fprintf(os.Stderr, "Unsupported bits per sample: %d\n", bitsPerSample)
+		if err != nil {
+			os.Exit(2)
+		}
+		os.Exit(1)
+	}
+	otoFormat = *formatPtr
 
 	for chunkOffset+8 <= uint32(len(data)) {
 		chunkId := string(data[chunkOffset : chunkOffset+4])
@@ -136,31 +187,7 @@ func main() {
 				dataEnd = uint32(len(data))
 			}
 
-			if bitsPerSample == 24 {
-				for i := dataStart; i+3 <= dataEnd; i += 3 {
-					// Combine into a 24-bit signed integer (little-endian)
-					// data[i] is low byte, data[i+1] is mid byte, data[i+2] is high byte
-					b1 := uint32(data[i])
-					b2 := uint32(data[i+1])
-					b3 := uint32(data[i+2])
-
-					val24 := b1 | (b2 << 8) | (b3 << 16)
-
-					// Sign-extend from 24-bit to 32-bit
-					if val24&0x800000 != 0 {
-						val24 |= 0xFF000000
-					}
-
-					// Convert to 16-bit (signed)
-					// We take the top 16 bits of the 24-bit value
-					val16 := int16(int32(val24) >> 8)
-
-					// Append as little-endian 16-bit
-					audioData = append(audioData, byte(val16), byte(val16>>8))
-				}
-			} else {
-				audioData = append(audioData, data[dataStart:dataEnd]...)
-			}
+			audioData = decoder(data[dataStart:dataEnd])
 			break
 		}
 		chunkOffset += 8 + chunkSize
@@ -168,20 +195,6 @@ func main() {
 
 	if len(audioData) == 0 {
 		_, err := fmt.Fprintln(os.Stderr, "Data chunks not found")
-		if err != nil {
-			os.Exit(2)
-		}
-		os.Exit(1)
-	}
-
-	var otoFormat oto.Format
-	switch bitsPerSample {
-	case 8:
-		otoFormat = oto.FormatUnsignedInt8
-	case 16, 24:
-		otoFormat = oto.FormatSignedInt16LE
-	default:
-		_, err := fmt.Fprintf(os.Stderr, "Unsupported bits per sample: %d\n", bitsPerSample)
 		if err != nil {
 			os.Exit(2)
 		}
