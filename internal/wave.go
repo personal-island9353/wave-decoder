@@ -3,7 +3,6 @@ package wave
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
 )
@@ -55,17 +54,17 @@ type Parser struct {
 }
 
 type Metadata struct {
-	AudioFormat   uint16 `json:"audioFormat" yaml:"audioFormat"`
-	NumChannels   uint16 `json:"numChannels" yaml:"numChannels"`
-	SampleRate    uint32 `json:"sampleRate" yaml:"sampleRate"`
-	ByteRate      uint32 `json:"byteRate" yaml:"byteRate"`
-	BlockAlign    uint16 `json:"blockAlign" yaml:"blockAlign"`
-	BitsPerSample uint16 `json:"bitsPerSample" yaml:"bitsPerSample"`
+	AudioFormat   uint16
+	NumChannels   uint16
+	SampleRate    uint32
+	ByteRate      uint32
+	BlockAlign    uint16
+	BitsPerSample uint16
 }
 
 func (m Metadata) String() string {
-	jsonString, _ := json.Marshal(m)
-	return string(jsonString)
+	return fmt.Sprintf("AudioFormat: %d,\nNumChannels: %d,\nSampleRate: %d,\nByteRate: %d,\nBlockAlign: %d,\nBitsPerSample: %d\n",
+		m.AudioFormat, m.NumChannels, m.SampleRate, m.ByteRate, m.BlockAlign, m.BitsPerSample)
 }
 
 func (p *Parser) GetMetadata() *Metadata {
