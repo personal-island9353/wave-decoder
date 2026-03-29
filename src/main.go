@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -39,17 +40,195 @@ func decode24Bit(data []byte) []byte {
 	return decodedData
 }
 
-func getDecoder(bitsPerSample uint16) (decoderFunc, *oto.Format) {
+func getDecoder(bitsPerSample uint16) decoderFunc {
 	switch bitsPerSample {
 	case 8:
-		return decode8Bit, new(oto.FormatUnsignedInt8)
+		return decode8Bit
 	case 16:
-		return decode16Bit, new(oto.FormatSignedInt16LE)
+		return decode16Bit
 	case 24:
-		return decode24Bit, new(oto.FormatSignedInt16LE)
+		return decode24Bit
 	default:
-		return nil, nil
+		return nil
 	}
+}
+
+func getOtoFormat(bitsPerSample uint16) *oto.Format {
+	switch bitsPerSample {
+	case 8:
+		return new(oto.FormatUnsignedInt8)
+	case 16:
+		return new(oto.FormatSignedInt16LE)
+	case 24:
+		return new(oto.FormatSignedInt16LE)
+	default:
+		return nil
+	}
+}
+
+type Parser struct {
+	reader    *bytes.Reader
+	metadata  *Metadata
+	audioData []byte
+}
+
+type Metadata struct {
+	AudioFormat   uint16 `json:"audioFormat" yaml:"audioFormat"`
+	NumChannels   uint16 `json:"numChannels" yaml:"numChannels"`
+	SampleRate    uint32 `json:"sampleRate" yaml:"sampleRate"`
+	ByteRate      uint32 `json:"byteRate" yaml:"byteRate"`
+	BlockAlign    uint16 `json:"blockAlign" yaml:"blockAlign"`
+	BitsPerSample uint16 `json:"bitsPerSample" yaml:"bitsPerSample"`
+}
+
+func (m *Metadata) String() string {
+	jsonString, _ := json.Marshal(m)
+	return string(jsonString)
+}
+
+func (p *Parser) getMetadata() Metadata {
+	return *p.metadata
+}
+
+func (p *Parser) getAudioData() []byte {
+	return p.audioData
+}
+
+func (p *Parser) Parse() error {
+	_, err := p.validateHeader()
+	if err != nil {
+		return err
+	}
+	metadata, err := p.parseFmt()
+	if err != nil {
+		return err
+	}
+	p.metadata = metadata
+	audioData, err := p.parseAudioData()
+	if err != nil {
+		return err
+	}
+	p.audioData = audioData
+	return nil
+}
+
+func (p *Parser) validateHeader() (uint32, error) {
+	var riff [4]byte
+	if _, err := io.ReadFull(p.reader, riff[:]); err != nil || string(riff[:]) != "RIFF" {
+		return 0, fmt.Errorf("invalid RIFF header")
+	}
+	var fileSize uint32
+	if err := binary.Read(p.reader, binary.LittleEndian, &fileSize); err != nil {
+		return 0, fmt.Errorf("invalid file size")
+	}
+	var waveFormat [4]byte
+	if _, err := io.ReadFull(p.reader, waveFormat[:]); err != nil || string(waveFormat[:]) != "WAVE" {
+		return 0, fmt.Errorf("invalid WAVE format")
+	}
+	return fileSize, nil
+}
+
+func (p *Parser) parseFmt() (*Metadata, error) {
+	var chunkId [4]byte
+	if _, err := io.ReadFull(p.reader, chunkId[:]); err != nil || string(chunkId[:]) != "fmt " {
+		return nil, fmt.Errorf("missing fmt chunk")
+	}
+	var fmtChunkSize uint32
+	if err := binary.Read(p.reader, binary.LittleEndian, &fmtChunkSize); err != nil {
+		return nil, fmt.Errorf("missing fmt chunk size")
+	}
+	var audioFormat uint16
+	if err := binary.Read(p.reader, binary.LittleEndian, &audioFormat); err != nil || audioFormat != 1 {
+		return nil, fmt.Errorf("unsupported audio format")
+	}
+	var numChannels uint16
+	if err := binary.Read(p.reader, binary.LittleEndian, &numChannels); err != nil || (numChannels != 1 && numChannels != 2) {
+		return nil, fmt.Errorf("unsupported number of channels")
+	}
+	var sampleRate uint32
+	if err := binary.Read(p.reader, binary.LittleEndian, &sampleRate); err != nil {
+		return nil, fmt.Errorf("error reading sample rate")
+	}
+	var byteRate uint32
+	if err := binary.Read(p.reader, binary.LittleEndian, &byteRate); err != nil {
+		return nil, fmt.Errorf("error reading sample byte")
+	}
+	var blockAlign uint16
+	if err := binary.Read(p.reader, binary.LittleEndian, &blockAlign); err != nil {
+		return nil, fmt.Errorf("error reading block align")
+	}
+	var bitsPerSample uint16
+	if err := binary.Read(p.reader, binary.LittleEndian, &bitsPerSample); err != nil {
+		return nil, fmt.Errorf("error reading bits per sample")
+	}
+	if bitsPerSample != 8 && bitsPerSample != 16 && bitsPerSample != 24 {
+		return nil, fmt.Errorf("unsupported bits per sample")
+	}
+
+	if byteRate != sampleRate*uint32(numChannels)*uint32(bitsPerSample)/8 {
+		return nil, fmt.Errorf("malformed byte rate")
+	}
+
+	if blockAlign != numChannels*bitsPerSample/8 {
+		return nil, fmt.Errorf("malformed block align")
+	}
+
+	// Skip remaining fmt chunk bytes if any
+	if fmtChunkSize > 16 {
+		_, err := p.reader.Seek(int64(fmtChunkSize-16), io.SeekCurrent)
+		if err != nil {
+			return nil, fmt.Errorf("error skipping remaining fmt chunk")
+		}
+	}
+
+	return &Metadata{
+		AudioFormat:   audioFormat,
+		NumChannels:   numChannels,
+		SampleRate:    sampleRate,
+		ByteRate:      byteRate,
+		BlockAlign:    blockAlign,
+		BitsPerSample: bitsPerSample,
+	}, nil
+}
+
+func (p *Parser) parseAudioData() ([]byte, error) {
+	decoder := getDecoder(p.metadata.BitsPerSample)
+
+	var audioData []byte
+
+	for {
+		var chunkId [4]byte
+		if _, err := io.ReadFull(p.reader, chunkId[:]); err != nil {
+			return nil, fmt.Errorf("error reading chunk ID")
+		}
+		var chunkSize uint32
+		if err := binary.Read(p.reader, binary.LittleEndian, &chunkSize); err != nil {
+			return nil, fmt.Errorf("error reading chunk size")
+		}
+
+		if string(chunkId[:]) == "data" {
+			rawAudioData := make([]byte, chunkSize)
+			if _, err := io.ReadFull(p.reader, rawAudioData); err != nil {
+				// Handle unexpected EOF if necessary, but here we just take what we have
+			}
+			audioData = decoder(rawAudioData)
+			break
+		}
+		_, err := p.reader.Seek(int64(chunkSize), io.SeekCurrent)
+		if err != nil {
+			return nil, fmt.Errorf("Error seeking chunk")
+		}
+	}
+
+	if len(audioData) == 0 {
+		return nil, fmt.Errorf("data chunks not found")
+	}
+
+	return audioData, nil
+}
+
+func newParser(data []byte) *Parser {
+	return &Parser{reader: bytes.NewReader(data)}
 }
 
 func main() {
@@ -57,11 +236,7 @@ func main() {
 	args := flag.Args()
 
 	if len(args) != 1 {
-		_, err := fmt.Fprintf(os.Stderr, "Usage: %s <file>\n", os.Args[0])
-		if err != nil {
-			os.Exit(1)
-			return
-		}
+		fmt.Fprintf(os.Stderr, "Usage: %s <file>\n", os.Args[0])
 		os.Exit(1)
 	}
 
@@ -71,143 +246,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	reader := bytes.NewReader(data)
-
-	var riff [4]byte
-	if _, err := io.ReadFull(reader, riff[:]); err != nil || string(riff[:]) != "RIFF" {
-		fmt.Fprintf(os.Stderr, "File %s is too small or contains invalid RIFF header\n", args[0])
+	parser := newParser(data)
+	if err = parser.Parse(); err != nil {
+		fmt.Println(err)
 		os.Exit(1)
 	}
+	metadata := parser.getMetadata()
+	fmt.Printf("%s\n", metadata)
+	audioData := parser.getAudioData()
 
-	var riffChunkSize uint32
-	if err = binary.Read(reader, binary.LittleEndian, &riffChunkSize); err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading Riff chunk size from %s\n", args[0])
-		os.Exit(1)
-	}
+	otoFormat := getOtoFormat(metadata.BitsPerSample)
 
-	var waveFormat [4]byte
-	if _, err := io.ReadFull(reader, waveFormat[:]); err != nil || string(waveFormat[:]) != "WAVE" {
-		fmt.Fprintf(os.Stderr, "File %s contains invalid WAVE format\n", args[0])
-		os.Exit(1)
-	}
-
-	var chunkId [4]byte
-	if _, err := io.ReadFull(reader, chunkId[:]); err != nil || string(chunkId[:]) != "fmt " {
-		fmt.Fprintf(os.Stderr, "File %s misses fmt chunk\n", args[0])
-		os.Exit(1)
-	}
-
-	var fmtChunkSize uint32
-	if err = binary.Read(reader, binary.LittleEndian, &fmtChunkSize); err != nil {
-		fmt.Fprintf(os.Stderr, "File %s misses fmt chunk size\n", args[0])
-		os.Exit(1)
-	}
-
-	var audioFormat uint16
-	if err = binary.Read(reader, binary.LittleEndian, &audioFormat); err != nil || audioFormat != 1 {
-		fmt.Fprintf(os.Stderr, "File %s contains unsupported audio format\n", args[0])
-		os.Exit(1)
-	}
-
-	var numChannels uint16
-	if err = binary.Read(reader, binary.LittleEndian, &numChannels); err != nil || (numChannels != 1 && numChannels != 2) {
-		fmt.Fprintf(os.Stderr, "File %s contains unsupported number of channels %d\n", args[0], numChannels)
-		os.Exit(1)
-	}
-
-	var sampleRate uint32
-	if err = binary.Read(reader, binary.LittleEndian, &sampleRate); err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading sample rate from %s\n", args[0])
-		os.Exit(1)
-	}
-	fmt.Printf("Sample rate: %d\n", sampleRate)
-
-	var byteRate uint32
-	if err = binary.Read(reader, binary.LittleEndian, &byteRate); err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading sample byte from %s\n", args[0])
-		os.Exit(1)
-	}
-	fmt.Printf("Byte rate: %d\n", byteRate)
-
-	var blockAlign uint16
-	if err = binary.Read(reader, binary.LittleEndian, &blockAlign); err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading block align from %s\n", args[0])
-		os.Exit(1)
-	}
-	fmt.Printf("Block align: %d\n", blockAlign)
-
-	var bitsPerSample uint16
-	if err = binary.Read(reader, binary.LittleEndian, &bitsPerSample); err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading bits per sample from %s\n", args[0])
-		os.Exit(1)
-	}
-	fmt.Printf("Bits per sample: %d\n", bitsPerSample)
-
-	if byteRate != sampleRate*uint32(numChannels)*uint32(bitsPerSample)/8 {
-		fmt.Fprintf(os.Stderr, "File %s contains malformed byte rate\n", args[0])
-		os.Exit(1)
-	}
-
-	if blockAlign != numChannels*bitsPerSample/8 {
-		fmt.Fprintf(os.Stderr, "File %s contains malformed block align\n", args[0])
-		os.Exit(1)
-	}
-
-	// Skip remaining fmt chunk bytes if any
-	if fmtChunkSize > 16 {
-		_, err := reader.Seek(int64(fmtChunkSize-16), io.SeekCurrent)
-		if err != nil {
-			return
-		}
-	}
-
-	var audioData []byte
-	var otoFormat oto.Format
-
-	decoder, formatPtr := getDecoder(bitsPerSample)
-	if formatPtr == nil {
-		fmt.Fprintf(os.Stderr, "Unsupported bits per sample: %d\n", bitsPerSample)
-		os.Exit(1)
-	}
-	otoFormat = *formatPtr
-
-	for {
-		var chunkId [4]byte
-		if _, err := io.ReadFull(reader, chunkId[:]); err != nil {
-			break
-		}
-		var chunkSize uint32
-		if err := binary.Read(reader, binary.LittleEndian, &chunkSize); err != nil {
-			break
-		}
-
-		if string(chunkId[:]) == "data" {
-			rawAudioData := make([]byte, chunkSize)
-			if _, err := io.ReadFull(reader, rawAudioData); err != nil {
-				// Handle unexpected EOF if necessary, but here we just take what we have
-			}
-			audioData = decoder(rawAudioData)
-			break
-		}
-		_, err := reader.Seek(int64(chunkSize), io.SeekCurrent)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error seeking chunk: %d\n", bitsPerSample)
-			os.Exit(1)
-		}
-	}
-
-	if len(audioData) == 0 {
-		_, err := fmt.Fprintln(os.Stderr, "Data chunks not found")
-		if err != nil {
-			os.Exit(2)
-		}
+	if otoFormat == nil {
+		fmt.Fprintf(os.Stderr, "Unsupported bits per sample: %d\n", metadata.BitsPerSample)
 		os.Exit(1)
 	}
 
 	op := &oto.NewContextOptions{
-		SampleRate:   int(sampleRate),
-		ChannelCount: int(numChannels),
-		Format:       otoFormat,
+		SampleRate:   int(metadata.SampleRate),
+		ChannelCount: int(metadata.NumChannels),
+		Format:       *otoFormat,
 	}
 
 	otoCtx, readyChan, err := oto.NewContext(op)
