@@ -142,6 +142,7 @@ func (p *Parser) parseFmt() (*Metadata, error) {
 	if err := binary.Read(p.reader, binary.LittleEndian, &bitsPerSample); err != nil {
 		return nil, fmt.Errorf("error reading bits per sample")
 	}
+
 	if bitsPerSample != 8 && bitsPerSample != 16 && bitsPerSample != 24 {
 		return nil, fmt.Errorf("unsupported bits per sample")
 	}
