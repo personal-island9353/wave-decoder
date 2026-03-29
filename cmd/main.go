@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/ebitengine/oto/v3"
@@ -22,6 +23,15 @@ func getOtoFormat(bitsPerSample uint16) *oto.Format {
 	default:
 		return nil
 	}
+}
+
+func addPrefixSpace(s string) string {
+	// Split into lines, prefix each with "\t", then join back
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = "  " + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 func main() {
@@ -45,7 +55,8 @@ func main() {
 		os.Exit(1)
 	}
 	metadata := parser.GetMetadata()
-	fmt.Printf("%s\n", metadata)
+	fmt.Println("Metadata:")
+	fmt.Printf("%s\n", addPrefixSpace(metadata.String()))
 	audioData := parser.GetAudioData()
 
 	otoFormat := getOtoFormat(metadata.BitsPerSample)
@@ -68,6 +79,7 @@ func main() {
 	}
 	<-readyChan
 
+	fmt.Println("Playing...")
 	player := otoCtx.NewPlayer(bytes.NewReader(audioData))
 	player.Play()
 
