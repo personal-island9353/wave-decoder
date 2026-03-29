@@ -1,16 +1,11 @@
-package main
+package wave
 
 import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
-	"os"
-	"time"
-
-	"github.com/ebitengine/oto/v3"
 )
 
 type decoderFunc func(data []byte) []byte
@@ -53,19 +48,6 @@ func getDecoder(bitsPerSample uint16) decoderFunc {
 	}
 }
 
-func getOtoFormat(bitsPerSample uint16) *oto.Format {
-	switch bitsPerSample {
-	case 8:
-		return new(oto.FormatUnsignedInt8)
-	case 16:
-		return new(oto.FormatSignedInt16LE)
-	case 24:
-		return new(oto.FormatSignedInt16LE)
-	default:
-		return nil
-	}
-}
-
 type Parser struct {
 	reader    *bytes.Reader
 	metadata  *Metadata
@@ -81,16 +63,16 @@ type Metadata struct {
 	BitsPerSample uint16 `json:"bitsPerSample" yaml:"bitsPerSample"`
 }
 
-func (m *Metadata) String() string {
+func (m Metadata) String() string {
 	jsonString, _ := json.Marshal(m)
 	return string(jsonString)
 }
 
-func (p *Parser) getMetadata() Metadata {
-	return *p.metadata
+func (p *Parser) GetMetadata() *Metadata {
+	return p.metadata
 }
 
-func (p *Parser) getAudioData() []byte {
+func (p *Parser) GetAudioData() []byte {
 	return p.audioData
 }
 
@@ -227,58 +209,6 @@ func (p *Parser) parseAudioData() ([]byte, error) {
 	return audioData, nil
 }
 
-func newParser(data []byte) *Parser {
+func NewParser(data []byte) *Parser {
 	return &Parser{reader: bytes.NewReader(data)}
-}
-
-func main() {
-	flag.Parse()
-	args := flag.Args()
-
-	if len(args) != 1 {
-		fmt.Fprintf(os.Stderr, "Usage: %s <file>\n", os.Args[0])
-		os.Exit(1)
-	}
-
-	data, err := os.ReadFile(args[0])
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-
-	parser := newParser(data)
-	if err = parser.Parse(); err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-	metadata := parser.getMetadata()
-	fmt.Printf("%s\n", metadata)
-	audioData := parser.getAudioData()
-
-	otoFormat := getOtoFormat(metadata.BitsPerSample)
-
-	if otoFormat == nil {
-		fmt.Fprintf(os.Stderr, "Unsupported bits per sample: %d\n", metadata.BitsPerSample)
-		os.Exit(1)
-	}
-
-	op := &oto.NewContextOptions{
-		SampleRate:   int(metadata.SampleRate),
-		ChannelCount: int(metadata.NumChannels),
-		Format:       *otoFormat,
-	}
-
-	otoCtx, readyChan, err := oto.NewContext(op)
-	if err != nil {
-		fmt.Printf("Failed to start audio context: %v\n", err)
-		os.Exit(1)
-	}
-	<-readyChan
-
-	player := otoCtx.NewPlayer(bytes.NewReader(audioData))
-	player.Play()
-
-	for player.IsPlaying() {
-		time.Sleep(100 * time.Millisecond)
-	}
 }
