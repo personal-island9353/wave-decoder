@@ -190,14 +190,14 @@ func (p *Parser) parseAudioData() ([]byte, error) {
 		if string(chunkId[:]) == "data" {
 			rawAudioData := make([]byte, chunkSize)
 			if _, err := io.ReadFull(p.reader, rawAudioData); err != nil {
-				// Handle unexpected EOF if necessary, but here we just take what we have
+				return nil, fmt.Errorf("error reading audio data")
 			}
 			audioData = decoder(rawAudioData)
 			break
 		}
 		_, err := p.reader.Seek(int64(chunkSize), io.SeekCurrent)
 		if err != nil {
-			return nil, fmt.Errorf("Error seeking chunk")
+			return nil, fmt.Errorf("error seeking chunk")
 		}
 	}
 
